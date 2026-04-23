@@ -1,14 +1,10 @@
 name: Frontend Pipeline
 
-on:
+"on":
   pull_request:
     branches: [ "develop", "main" ]
-    paths:
-      - 'sport-hub-app/**'
   push:
     branches: [ "main" ]
-    paths:
-      - 'sport-hub-app/**'
 
 env:
   NODE_VERSION: '20'

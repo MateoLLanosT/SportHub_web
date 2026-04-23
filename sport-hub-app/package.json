@@ -1,0 +1,32 @@
+{
+  "name": "sport-hub-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@opennextjs/cloudflare": "^1.19.3",
+    "next": "^15.5.15",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^15.5.15",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "wrangler": "^4.84.1"
+  }
+}

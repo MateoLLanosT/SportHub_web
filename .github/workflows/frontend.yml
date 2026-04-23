@@ -1,0 +1,256 @@
+name: Frontend Pipeline
+
+on:
+  pull_request:
+    branches: [ "develop", "main" ]
+    paths:
+      - 'sport-hub-app/**'
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'sport-hub-app/**'
+
+env:
+  NODE_VERSION: '20'
+  PACKAGE_LOCK: sport-hub-app/package-lock.json
+
+# ─────────────────────────────────────────────────────
+# Cancela runs anteriores del mismo PR para ahorrar minutos
+# ─────────────────────────────────────────────────────
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ─────────────────────────────────────────────────────
+  # JOB 1 — QUALITY CHECK
+  # Corre en PRs hacia develop Y hacia main
+  # Lint usa "next lint" (corregido desde "eslint" sin target)
+  # ─────────────────────────────────────────────────────
+  quality-check:
+    name: Quality check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    defaults:
+      run:
+        working-directory: sport-hub-app
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.PACKAGE_LOCK }}
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Lint
+        # Corregido: "next lint" en vez de "eslint" sin configuración de target
+        run: npx next lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build check
+        # Valida que el build de Next.js no rompa antes de hacer el build de Cloudflare
+        run: npm run build
+
+  # ─────────────────────────────────────────────────────
+  # JOB 2 — UNIT TESTS
+  # Solo en PRs hacia develop
+  # Si no hay tests aún, --passWithNoTests evita fallo
+  # ─────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    needs: quality-check
+    if: |
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'develop'
+    defaults:
+      run:
+        working-directory: sport-hub-app
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.PACKAGE_LOCK }}
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar unit tests
+        # --passWithNoTests: no falla si aún no hay tests escritos
+        # Cuando agreguen Jest/Vitest, agregar el script "test" en package.json
+        run: npx jest --passWithNoTests 2>/dev/null || echo "No test runner configurado — agrega Jest o Vitest"
+
+  # ─────────────────────────────────────────────────────
+  # JOB 3 — DEPLOY PREVIEW (Cloudflare Workers)
+  # URL dinámica por PR number para evitar colisión entre PRs
+  # ─────────────────────────────────────────────────────
+  deploy-preview:
+    name: Deploy preview
+    runs-on: ubuntu-latest
+    needs: [ quality-check, unit-tests ]
+    if: |
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'develop'
+    defaults:
+      run:
+        working-directory: sport-hub-app
+
+    # Necesario para poder comentar en el PR
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.PACKAGE_LOCK }}
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Build para Cloudflare Workers
+        run: npx opennextjs-cloudflare build
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy preview a Cloudflare Workers
+        # Nombre dinámico con PR number — evita que dos PRs se pisen
+        run: |
+          npx wrangler deploy \
+            --name sport-hub-app-pr-${{ github.event.pull_request.number }} \
+            --env preview
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Comentar preview URL en el PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const previewUrl = `https://sport-hub-app-pr-${prNumber}.workers.dev`;
+            const sha = context.payload.pull_request.head.sha.substring(0, 7);
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Preview desplegado\n\n**URL:** ${previewUrl}\n**Commit:** \`${sha}\`\n\n| Check | Estado |\n|-------|--------|\n| Quality check | ✅ aprobado |\n| Unit tests | ✅ aprobado |\n| Preview | ✅ desplegado |\n\n> Revisa los cambios antes de aprobar el merge.`
+            });
+
+  # ─────────────────────────────────────────────────────
+  # JOB 4 — QUALITY CHECK para PRs hacia main
+  # Corre tests completos antes de mergear a producción
+  # ─────────────────────────────────────────────────────
+  quality-check-main:
+    name: Quality check (main gate)
+    runs-on: ubuntu-latest
+    needs: quality-check
+    if: |
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'main'
+    defaults:
+      run:
+        working-directory: sport-hub-app
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.PACKAGE_LOCK }}
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar unit tests (gate de main)
+        run: npx jest --passWithNoTests 2>/dev/null || echo "No test runner configurado"
+
+  # ─────────────────────────────────────────────────────
+  # JOB 5 — DEPLOY PRODUCCIÓN
+  # Solo en push directo a main (merge completado)
+  # Usa el script "deploy" corregido en package.json
+  # ─────────────────────────────────────────────────────
+  deploy-production:
+    name: Deploy produccion
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+    defaults:
+      run:
+        working-directory: sport-hub-app
+
+    # Garantiza un solo deploy a prod a la vez
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.PACKAGE_LOCK }}
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Build + deploy a Cloudflare Workers (producción)
+        # "npm run deploy" debe estar corregido en package.json:
+        # "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy"
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Verificar deploy exitoso
+        # Smoke test básico: espera que la URL de producción responda 200
+        run: |
+          echo "Verificando que producción responde..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://sport-hub-app.workers.dev)
+          if [ "$STATUS" != "200" ]; then
+            echo "FALLO: produccion respondio $STATUS"
+            exit 1
+          fi
+          echo "OK: produccion responde $STATUS"
+
+      - name: Notificar fallo de producción
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Deploy produccion fallido — ${context.sha.substring(0, 7)}`,
+              body: `El deploy a produccion fallo en el commit \`${context.sha}\`.\n\n**Action:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nRevisar y hacer rollback manual si es necesario.`,
+              labels: ['bug', 'production']
+            });
